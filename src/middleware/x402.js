@@ -196,7 +196,7 @@ async function checkBalance(network, from, requiredAmount) {
   }
 }
 
-function extractPaymentIdentifier(paymentPayload) {
+export function extractPaymentIdentifier(paymentPayload) {
   try {
     const extensions = paymentPayload.extensions || paymentPayload.payload?.extensions;
     if (!extensions) return null;
@@ -211,6 +211,17 @@ function extractPaymentIdentifier(paymentPayload) {
   } catch {
     return null;
   }
+}
+
+/**
+ * The idempotency cache stores one entry per (route, paymentId). paymentId comes from a
+ * client-controlled extension field and is never checked against which route, or which
+ * price, it was originally paid for. Scoping the cache key by routeKey means a paymentId
+ * cached while paying for one route can only ever satisfy a retry of that SAME route, not
+ * a different, possibly more expensive one.
+ */
+export function buildIdempotencyCacheKey(routeKey, paymentId) {
+  return `${routeKey}:${paymentId}`;
 }
 
 // ============================================================
@@ -611,8 +622,9 @@ export function x402PaymentMiddleware(routeKey) {
 
     // Idempotency check
     const paymentId = extractPaymentIdentifier(paymentPayload);
-    if (paymentId) {
-      const cached = await getIdempotencyCache(paymentId);
+    const idempotencyCacheKey = paymentId ? buildIdempotencyCacheKey(routeKey, paymentId) : null;
+    if (idempotencyCacheKey) {
+      const cached = await getIdempotencyCache(idempotencyCacheKey);
       if (cached) {
         console.log(`[x402] Idempotency hit: ${paymentId.slice(0, 16)}...`);
         if (cached.response?.paymentResponseHeader) {
@@ -744,8 +756,8 @@ export function x402PaymentMiddleware(routeKey) {
         res.set('PAYMENT-RESPONSE', paymentResponseHeader);
 
         // Cache for idempotency
-        if (paymentId) {
-          await setIdempotencyCache(paymentId, { paymentResponseHeader, settlement: paymentResponseData });
+        if (idempotencyCacheKey) {
+          await setIdempotencyCache(idempotencyCacheKey, { paymentResponseHeader, settlement: paymentResponseData });
         }
 
         didSettle = true;
